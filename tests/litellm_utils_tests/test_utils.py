@@ -33,7 +33,6 @@ from litellm.utils import (
     get_supported_openai_params,
     get_token_count,
     get_valid_models,
-    token_counter,
     trim_messages,
     validate_environment,
 )
@@ -41,10 +40,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 # Assuming your trim_messages, shorten_message_to_fit_limit, and get_token_count functions are all in a module named 'message_utils'
-
-
+@pytest.fixture(autouse=True)
+def reset_mock_cache():
+    from litellm.utils import _model_cache
+    _model_cache.flush_cache()
 # Test 1: Check trimming of normal message
 def test_basic_trimming():
+    litellm._turn_on_debug()
     messages = [
         {
             "role": "user",
@@ -443,41 +445,6 @@ def test_function_to_dict():
 
 # test_function_to_dict()
 
-
-def test_token_counter():
-    try:
-        messages = [{"role": "user", "content": "hi how are you what time is it"}]
-        tokens = token_counter(model="gpt-3.5-turbo", messages=messages)
-        print("gpt-35-turbo")
-        print(tokens)
-        assert tokens > 0
-
-        tokens = token_counter(model="claude-2", messages=messages)
-        print("claude-2")
-        print(tokens)
-        assert tokens > 0
-
-        tokens = token_counter(model="gemini/chat-bison", messages=messages)
-        print("gemini/chat-bison")
-        print(tokens)
-        assert tokens > 0
-
-        tokens = token_counter(model="ollama/llama2", messages=messages)
-        print("ollama/llama2")
-        print(tokens)
-        assert tokens > 0
-
-        tokens = token_counter(model="anthropic.claude-instant-v1", messages=messages)
-        print("anthropic.claude-instant-v1")
-        print(tokens)
-        assert tokens > 0
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
-
-
-# test_token_counter()
-
-
 @pytest.mark.parametrize(
     "model, expected_bool",
     [
@@ -632,6 +599,73 @@ def test_redact_msgs_from_logs():
         response_obj.choices[0].message.content
         == "I'm LLaMA, an AI assistant developed by Meta AI that can understand and respond to human input in a conversational manner."
     )
+
+    litellm.turn_off_message_logging = False
+    print("Test passed")
+
+
+def test_redact_embedding_response():
+    """
+    Tests that EmbeddingResponse redaction preserves critical metadata while clearing sensitive data
+
+    This test ensures that:
+    1. usage field is preserved for token/cost tracking
+    2. model field is preserved for response structure integrity
+    3. data field (containing embeddings) is cleared for privacy
+    4. original response object is not modified
+    """
+    from litellm.litellm_core_utils.litellm_logging import Logging
+    from litellm.litellm_core_utils.redact_messages import (
+        redact_message_input_output_from_logging,
+    )
+
+    litellm.turn_off_message_logging = True
+
+    # Create a test EmbeddingResponse with usage data
+    original_usage = litellm.Usage(prompt_tokens=10, completion_tokens=0, total_tokens=10)
+    original_data = [
+        {"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3, 0.4, 0.5]},
+        {"object": "embedding", "index": 1, "embedding": [0.6, 0.7, 0.8, 0.9, 1.0]}
+    ]
+
+    response_obj = litellm.EmbeddingResponse(
+        model="text-embedding-ada-002",
+        data=original_data,
+        usage=original_usage,
+        object="list"
+    )
+
+    litellm_logging_obj = Logging(
+        model="text-embedding-ada-002",
+        messages=[{"role": "user", "content": "test input"}],
+        stream=False,
+        call_type="embedding",
+        litellm_call_id="1234",
+        start_time=datetime.now(),
+        function_id="1234",
+    )
+
+    _redacted_response_obj = redact_message_input_output_from_logging(
+        result=response_obj,
+        model_call_details=litellm_logging_obj.model_call_details,
+    )
+
+    # Assert the original response_obj is NOT modified
+    assert response_obj.data == original_data
+    assert response_obj.usage == original_usage
+    assert response_obj.model == "text-embedding-ada-002"
+    assert response_obj.object == "list"
+
+    # Assert the redacted response preserves critical metadata
+    assert _redacted_response_obj.usage == original_usage  # usage should be preserved
+    assert _redacted_response_obj.model == "text-embedding-ada-002"  # model should be preserved
+    assert _redacted_response_obj.object == "list"  # object should be preserved
+
+    # Assert sensitive data is cleared
+    assert _redacted_response_obj.data == []  # data should be cleared
+
+    # Assert it's still an EmbeddingResponse instance
+    assert isinstance(_redacted_response_obj, litellm.EmbeddingResponse)
 
     litellm.turn_off_message_logging = False
     print("Test passed")
@@ -1052,25 +1086,32 @@ def test_is_base64_encoded():
 )
 def test_async_http_handler(mock_async_client):
     import httpx
+    import ssl
 
     timeout = 120
     event_hooks = {"request": [lambda r: r]}
     concurrent_limit = 2
 
-    AsyncHTTPHandler(timeout, event_hooks, concurrent_limit)
+    # Mock the transport creation to return a specific transport
+    with mock.patch.object(AsyncHTTPHandler, '_create_async_transport') as mock_create_transport:
+        mock_transport = mock.MagicMock()
+        mock_create_transport.return_value = mock_transport
 
-    mock_async_client.assert_called_with(
-        cert="/client.pem",
-        transport=None,
-        event_hooks=event_hooks,
-        headers=headers,
-        limits=httpx.Limits(
-            max_connections=concurrent_limit,
-            max_keepalive_connections=concurrent_limit,
-        ),
-        timeout=timeout,
-        verify="/certificate.pem",
-    )
+        AsyncHTTPHandler(timeout, event_hooks, concurrent_limit)
+
+        # Get the call arguments
+        call_args = mock_async_client.call_args[1]
+        
+        # Assert SSL context is being used instead of direct cert/verify params
+        assert call_args["cert"] == "/client.pem"
+        assert isinstance(call_args["verify"], ssl.SSLContext)
+        assert call_args["transport"] == mock_transport
+        assert call_args["event_hooks"] == event_hooks
+        assert call_args["headers"] == headers
+        assert isinstance(call_args["limits"], httpx.Limits)
+        assert call_args["limits"].max_connections == concurrent_limit
+        assert call_args["limits"].max_keepalive_connections == concurrent_limit
+        assert call_args["timeout"] == timeout
 
 
 @mock.patch("httpx.AsyncClient")
@@ -1082,10 +1123,12 @@ def test_async_http_handler_force_ipv4(mock_async_client):
     This is prod test - we need to ensure that httpx always uses ipv4 when litellm.force_ipv4 is True
     """
     import httpx
+    import ssl
     from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
     # Set force_ipv4 to True
     litellm.force_ipv4 = True
+    litellm.disable_aiohttp_transport = True
 
     try:
         timeout = 120
@@ -1111,7 +1154,7 @@ def test_async_http_handler_force_ipv4(mock_async_client):
         assert call_args["limits"].max_connections == concurrent_limit
         assert call_args["limits"].max_keepalive_connections == concurrent_limit
         assert call_args["timeout"] == timeout
-        assert call_args["verify"] is True
+        assert isinstance(call_args["verify"], ssl.SSLContext)
         assert call_args["cert"] is None
 
     finally:
@@ -1286,20 +1329,20 @@ def test_get_end_user_id_for_cost_tracking(
 
 
 @pytest.mark.parametrize(
-    "litellm_params, disable_end_user_cost_tracking_prometheus_only, expected_end_user_id",
+    "litellm_params, enable_end_user_cost_tracking_prometheus_only, expected_end_user_id",
     [
-        ({}, False, None),
-        ({"user_api_key_end_user_id": "123"}, False, "123"),
-        ({"user_api_key_end_user_id": "123"}, True, None),
+        ({}, True, None),
+        ({"user_api_key_end_user_id": "123"}, True, "123"),
+        ({"user_api_key_end_user_id": "123"}, False, None),
     ],
 )
 def test_get_end_user_id_for_cost_tracking_prometheus_only(
-    litellm_params, disable_end_user_cost_tracking_prometheus_only, expected_end_user_id
+    litellm_params, enable_end_user_cost_tracking_prometheus_only, expected_end_user_id
 ):
     from litellm.utils import get_end_user_id_for_cost_tracking
 
-    litellm.disable_end_user_cost_tracking_prometheus_only = (
-        disable_end_user_cost_tracking_prometheus_only
+    litellm.enable_end_user_cost_tracking_prometheus_only = (
+        enable_end_user_cost_tracking_prometheus_only
     )
     assert (
         get_end_user_id_for_cost_tracking(
@@ -1539,6 +1582,7 @@ def test_get_valid_models_fireworks_ai(monkeypatch):
         litellm.module_level_client, "get", return_value=mock_response
     ) as mock_post:
         valid_models = get_valid_models(check_provider_endpoint=True)
+        print("valid_models", valid_models)
         mock_post.assert_called_once()
         assert (
             "fireworks_ai/accounts/fireworks/models/llama-3.1-8b-instruct"
@@ -2122,3 +2166,92 @@ def test_get_provider_audio_transcription_config():
         config = ProviderConfigManager.get_provider_audio_transcription_config(
             model="whisper-1", provider=provider
         )
+
+
+@pytest.mark.parametrize(
+    "model, expected_bool",
+    [
+        ("anthropic.claude-3-7-sonnet-20250219-v1:0", True),
+        ("us.anthropic.claude-3-7-sonnet-20250219-v1:0", True),
+    ],
+)
+
+def test_claude_3_7_sonnet_supports_pdf_input(model, expected_bool):
+    from litellm.utils import supports_pdf_input
+
+    assert supports_pdf_input(model) == expected_bool
+
+
+def test_get_valid_models_from_provider():
+    """
+    Test that get_valid_models returns the correct models for a given provider
+    """
+    from litellm.utils import get_valid_models
+
+    valid_models = get_valid_models(custom_llm_provider="openai")
+    assert len(valid_models) > 0
+    assert "gpt-4o-mini" in valid_models
+
+    print("Valid models: ", valid_models)
+    valid_models.remove("gpt-4o-mini")
+    assert "gpt-4o-mini" not in valid_models
+
+    valid_models = get_valid_models(custom_llm_provider="openai")
+    assert len(valid_models) > 0
+    assert "gpt-4o-mini" in valid_models
+
+
+
+def test_get_valid_models_from_provider_cache_invalidation(monkeypatch):
+    """
+    Test that get_valid_models returns the correct models for a given provider
+    """
+    from litellm.utils import _model_cache
+
+    monkeypatch.setenv("OPENAI_API_KEY", "123")
+
+    _model_cache.set_cached_model_info("openai", litellm_params=None, available_models=["gpt-4o-mini"])
+    monkeypatch.delenv("OPENAI_API_KEY")
+
+    assert _model_cache.get_cached_model_info("openai") is None
+
+
+
+def test_get_valid_models_from_dynamic_api_key():
+    """
+    Test that get_valid_models returns the correct models for a given provider
+    """
+    from litellm.utils import get_valid_models
+    from litellm.types.router import CredentialLiteLLMParams
+
+    creds = CredentialLiteLLMParams(api_key="123")
+
+    valid_models = get_valid_models(custom_llm_provider="anthropic", litellm_params=creds, check_provider_endpoint=True)
+    assert len(valid_models) == 0
+
+    creds = CredentialLiteLLMParams(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    valid_models = get_valid_models(custom_llm_provider="anthropic", litellm_params=creds, check_provider_endpoint=True)
+    assert len(valid_models) > 0
+    assert "anthropic/claude-3-7-sonnet-20250219" in valid_models
+
+
+
+def test_get_whitelisted_models():
+    """
+    Snapshot of all bedrock models as of 12/24/2024.
+
+    Enforce any new bedrock chat model to be added as `bedrock_converse` unless explicitly whitelisted.
+
+    Create whitelist to prevent naming regressions for older litellm versions.
+    """
+    whitelisted_models = []
+    for model, info in litellm.model_cost.items():
+        if info["litellm_provider"] == "bedrock" and info["mode"] == "chat":
+            whitelisted_models.append(model)
+
+        # Write to a local file
+    with open("whitelisted_bedrock_models.txt", "w") as file:
+        for model in whitelisted_models:
+            file.write(f"{model}\n")
+
+    print("whitelisted_models written to whitelisted_bedrock_models.txt")

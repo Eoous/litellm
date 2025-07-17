@@ -60,7 +60,7 @@ export const prepareModelAddRequest = async (
             continue;
           }
           // Skip the custom_pricing and pricing_model fields as they're only used for UI control
-          if (key === 'custom_pricing' || key === 'pricing_model') {
+          if (key === 'custom_pricing' || key === 'pricing_model' || key === 'cache_control') {
             continue;
           }
           if (key == "model_name") {
@@ -80,6 +80,9 @@ export const prepareModelAddRequest = async (
           }
           else if (key === "team_id") {
             modelInfoObj["team_id"] = value;
+          }
+          else if (key === "model_access_group") {
+            modelInfoObj["access_groups"] = value;
           }
           else if (key == "mode") {
             console.log("placing mode in modelInfo")
