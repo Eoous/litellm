@@ -34,10 +34,13 @@ class SupportedGuardrailIntegrations(Enum):
     AIM = "aim"
     PANGEA = "pangea"
     LASSO = "lasso"
+    PILLAR = "pillar"
     PANW_PRISMA_AIRS = "panw_prisma_airs"
     AZURE_PROMPT_SHIELD = "azure/prompt_shield"
     AZURE_TEXT_MODERATIONS = "azure/text_moderations"
+    MODEL_ARMOR = "model_armor"
     OPENAI_MODERATION = "openai_moderation"
+    NOMA = "noma"
 
 class Role(Enum):
     SYSTEM = "system"
@@ -273,6 +276,10 @@ class BedrockGuardrailConfigModel(BaseModel):
         default=None,
         description="The version of your Bedrock guardrail (e.g., DRAFT or version number)",
     )
+    disable_exception_on_block: Optional[bool] = Field(
+        default=False,
+        description="If True, will not raise an exception when the guardrail is blocked. Useful for OpenWebUI where exceptions can end the chat flow.",
+    )
     aws_region_name: Optional[str] = Field(
         default=None, description="AWS region where your guardrail is deployed"
     )
@@ -303,6 +310,7 @@ class BedrockGuardrailConfigModel(BaseModel):
     aws_bedrock_runtime_endpoint: Optional[str] = Field(
         default=None, description="AWS Bedrock runtime endpoint URL"
     )
+
 
 
 class LakeraV2GuardrailConfigModel(BaseModel):
@@ -340,6 +348,32 @@ class LassoGuardrailConfigModel(BaseModel):
     )
     lasso_conversation_id: Optional[str] = Field(
         default=None, description="Conversation ID for the Lasso guardrail"
+    )
+
+
+class PillarGuardrailConfigModel(BaseModel):
+    """Configuration parameters for the Pillar Security guardrail"""
+
+    on_flagged_action: Optional[str] = Field(
+        default="monitor",
+        description="Action to take when content is flagged: 'block' (raise exception) or 'monitor' (log only)",
+    )
+
+
+class NomaGuardrailConfigModel(BaseModel):
+    """Configuration parameters for the Noma Security guardrail"""
+
+    application_id: Optional[str] = Field(
+        default=None,
+        description="Application ID for Noma Security. Defaults to 'litellm' if not provided",
+    )
+    monitor_mode: Optional[bool] = Field(
+        default=None,
+        description="If True, logs violations without blocking. Defaults to False if not provided",
+    )
+    block_failures: Optional[bool] = Field(
+        default=None,
+        description="If True, blocks requests on API failures. Defaults to True if not provided",
     )
 
 
@@ -394,6 +428,25 @@ class BaseLitellmParams(BaseModel):  # works for new and patch update guardrails
         default=None, description="Optional field if guardrail requires a 'model' parameter"
     )
 
+    # Model Armor params
+    template_id: Optional[str] = Field(
+        default=None, description="The ID of your Model Armor template"
+    )
+    location: Optional[str] = Field(
+        default=None, description="Google Cloud location/region (e.g., us-central1)"
+    )
+    credentials: Optional[str] = Field(
+        default=None,
+        description="Path to Google Cloud credentials JSON file or JSON string",
+    )
+    api_endpoint: Optional[str] = Field(
+        default=None, description="Optional custom API endpoint for Model Armor"
+    )
+    fail_on_error: Optional[bool] = Field(
+        default=True,
+        description="Whether to fail the request if Model Armor encounters an error",
+    )
+    
     model_config = ConfigDict(extra="allow", protected_namespaces=())
 
 
@@ -409,6 +462,8 @@ class LitellmParams(
     BedrockGuardrailConfigModel,
     LakeraV2GuardrailConfigModel,
     LassoGuardrailConfigModel,
+    PillarGuardrailConfigModel,
+    NomaGuardrailConfigModel,
     BaseLitellmParams,
 ):
     guardrail: str = Field(description="The type of guardrail integration to use")
@@ -455,6 +510,8 @@ class GuardrailEventHooks(str, Enum):
     post_call = "post_call"
     during_call = "during_call"
     logging_only = "logging_only"
+    pre_mcp_call = "pre_mcp_call"
+    during_mcp_call = "during_mcp_call"
 
 
 class DynamicGuardrailParams(TypedDict):

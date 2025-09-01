@@ -12,6 +12,7 @@ import { MCPServerView } from "./mcp_server_view"
 import CreateMCPServer from "./create_mcp_server"
 import MCPConnect from "./mcp_connect"
 import { QuestionCircleOutlined } from "@ant-design/icons"
+import NotificationsManager from "../molecules/notifications_manager"
 
 const { Option } = Select
 
@@ -57,6 +58,8 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
   const [selectedMcpAccessGroup, setSelectedMcpAccessGroup] = useState<string>("all")
   const [filteredServers, setFilteredServers] = useState<MCPServer[]>([])
   const [isModalVisible, setModalVisible] = useState(false)
+
+  const isInternalUser = userRole === "Internal User";
 
   // Get unique teams from all servers
   const uniqueTeams = React.useMemo(() => {
@@ -148,7 +151,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
     }
     try {
       await deleteMCPServer(accessToken, serverIdToDelete)
-      message.success("Deleted MCP Server successfully")
+      NotificationsManager.success("Deleted MCP Server successfully")
       refetch()
     } catch (error) {
       console.error("Error deleting the mcp server:", error)
@@ -168,6 +171,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
   }
 
   if (!accessToken || !userRole || !userID) {
+    console.log("Missing required authentication parameters", { accessToken, userRole, userID });
     return <div className="p-6 text-center text-gray-500">Missing required authentication parameters.</div>
   }
 
@@ -177,6 +181,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
         mcpServer={
           filteredServers.find((server: MCPServer) => server.server_id === selectedServerId) || {
             server_id: "",
+            server_name: "",
             alias: "",
             url: "",
             transport: "",
@@ -211,7 +216,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
                   <Option value="all">
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                      <span className="font-medium">All Servers</span>
+                      <span className="font-medium">{isInternalUser ? "All Available Servers" : "All Servers"}</span>
                     </div>
                   </Option>
                   <Option value="personal">
